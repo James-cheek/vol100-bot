@@ -2,7 +2,8 @@ name: Fetch Deriv candles
 
 on:
   schedule:
-    - cron: "7 * * * *"
+    # Starts at :45 (GitHub delays busy :00 runs), then waits for the candle to close.
+    - cron: "45 * * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -15,17 +16,29 @@ concurrency:
 jobs:
   fetch:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 30
     env:
       DERIV_SYMBOL: ${{ vars.DERIV_SYMBOL || 'R_100' }}
       DERIV_APP_ID: ${{ vars.DERIV_APP_ID || '1089' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install deps
         run: pip install websockets==12.0
+      - name: Wait for the 1H candle to close
+        if: github.event_name == 'schedule'
+        run: |
+          now=$(date -u +%s)
+          min=$(( (now % 3600) / 60 ))
+          if [ "$min" -ge 30 ]; then
+            wait=$(( 3600 - now % 3600 + 5 ))
+            echo "Waiting ${wait}s for the top of the hour"
+            sleep "$wait"
+          else
+            echo "Started late (minute $min), fetching now"
+          fi
       - name: Pull candles from Deriv
         run: python fetch_candles.py
       - name: Commit data
@@ -34,4 +47,5 @@ jobs:
           git config user.email "candle-bot@users.noreply.github.com"
           git add data/
           git commit -m "candles $(date -u +%Y-%m-%dT%H:%MZ)" || echo "no change"
+          git pull --rebase -q || true
           git push
